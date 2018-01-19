@@ -1,0 +1,33 @@
+CARTOGRAM COMPUTATION REPORT
+
+CARTOGRAM PARAMETERS:
+Cartogram layer: countyVotes
+Cartogram attribute: t__2016
+Attribute type: Population value
+Transformation quality: 50 of 100
+Cartogram grid size: 600 x 212
+Diffusion grid size: 256
+Diffusion iterations: 3
+
+CARTOGRAM LAYER & ATTRIBUTE STATISTICS:
+Number of features: 3112
+Attribute mean value: 41676.76413881748
+Attribute minimum value: 64.0
+Attribute maximum value: 2652072.0
+
+SIMULTANEOUSLY TRANSFORMED LAYERS:
+None
+
+CONSTRAINED DEFORMATION LAYERS:
+None
+
+CARTOGRAM ERROR
+The cartogram error is a measure for the quality of the result.
+Mean cartogram error: 99.55877338121135
+Standard deviation: 150.1138009952728
+25th percentile: 39.92279588087169
+50th percentile: 66.6613647632381
+75th percentile: 109.88739362250075
+Features with mean error +/- 1 standard deviation: 2932 of 3112 (94%)
+
+Computation time: 35 seconds

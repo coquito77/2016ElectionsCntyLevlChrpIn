@@ -1,0 +1,33 @@
+CARTOGRAM COMPUTATION REPORT
+
+CARTOGRAM PARAMETERS:
+Cartogram layer: stateVotes
+Cartogram attribute: T__20
+Attribute type: Population value
+Transformation quality: 50 of 100
+Cartogram grid size: 600 x 212
+Diffusion grid size: 256
+Diffusion iterations: 3
+
+CARTOGRAM LAYER & ATTRIBUTE STATISTICS:
+Number of features: 50
+Attribute mean value: 2593961.8
+Attribute minimum value: 248742.0
+Attribute maximum value: 1.1733523E7
+
+SIMULTANEOUSLY TRANSFORMED LAYERS:
+None
+
+CONSTRAINED DEFORMATION LAYERS:
+None
+
+CARTOGRAM ERROR
+The cartogram error is a measure for the quality of the result.
+Mean cartogram error: 114.23168777613307
+Standard deviation: 127.45839773014913
+25th percentile: 90.80156195621797
+50th percentile: 97.01978877377529
+75th percentile: 103.68348241693019
+Features with mean error +/- 1 standard deviation: 49 of 50 (98%)
+
+Computation time: 124 seconds

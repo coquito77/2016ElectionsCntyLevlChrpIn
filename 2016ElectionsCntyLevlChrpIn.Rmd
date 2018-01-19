@@ -1,0 +1,638 @@
+---
+header-includes:
+   - \usepackage{booktabs,float,longtable }
+   - \hypersetup{breaklinks=true}
+   - \usepackage{breakurl}
+output: 
+  pdf_document:
+    keep_tex: true
+    fig_caption: true
+    latex_engine: pdflatex
+title: "A Pandoc Markdown Article Starter and Template"
+thanks: "Replication files are available on the author's Github account..."
+author:
+- name: Steven V. Miller
+  affiliation: Clemson University
+- name: Mary Margaret Albright
+  affiliation: Pendelton State University
+- name: Rembrandt Q. Einstein
+  affiliation: Springfield University
+abstract: "This document provides an introduction to R Markdown, argues for its..."
+keywords: "pandoc, r markdown, knitr"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+
+
+---
+
+
+```{r setup, include=FALSE}
+
+rm(list=ls(all=TRUE)) #start with empty workspace
+
+startTime <- Sys.time() # get the time
+
+knitr::opts_chunk$set(cache = TRUE, echo = FALSE, message = FALSE, warning = FALSE, include = FALSE)
+
+library(RODBC) # package to import data from Excel or Access
+library(tidyverse) # package to clean up/manipulate data
+library(sf) # to work with maps
+library(sp)
+library(hrbrthemes)
+
+library(httr); set_config(config(ssl_verifypeer = 0L)); devtools::source_url("https://raw.githubusercontent.com/coquito77/R_functions/master/abbFileName.R")
+
+setwd("~/GitHub/2016ElectionsCntyLevlChrpIn/") # set the working directory
+list.files() # see whats there
+
+
+```
+
+
+```{r getdata, eval = FALSE}
+
+# get votes data
+
+voteData <- read.csv("https://raw.githubusercontent.com/bcdunbar/datasets/master/votes.csv") %>% 
+  mutate(combined_fips = as.factor(as.character(combined_fips)),
+         nchartest = nchar(as.character(combined_fips)),
+         combined_fips = ifelse(nchartest == 4, paste0("0",combined_fips),as.character(combined_fips)),
+         combined_fips = as.factor(as.character(combined_fips))) %>% 
+  select(votes_dem_2016,votes_gop_2016,total_votes_2016,Clinton,
+         Trump,diff_2016,per_point_diff_2016,state_abbr, 
+         county_name, combined_fips, combined_fips)
+
+# get county data
+ download.file('http://www2.census.gov/geo/tiger/GENZ2016/shp/cb_2016_us_county_500k.zip', 'county.zip',
+              quiet = TRUE)
+
+temp <- unzip('county.zip')
+
+projections <- st_proj_info(type = "proj")
+
+cb_2016_us_county_500k <- read_sf("./cb_2016_us_county_500k.shp", quiet = TRUE, stringsAsFactors = FALSE) 
+
+st_crs(cb_2016_us_county_500k)
+
+save.image(file = 'data.RData')
+
+```
+
+```{r processData, eval = TRUE}
+# setwd("~/GitHub/2016ElectionsCntyLevlChrpIn/") ; list.files() # see whats there
+
+load('data.RData')
+
+# need to get data for missing county 
+# https://en.wikipedia.org/wiki/Oglala_Lakota_County,_South_Dakota
+
+myurl <- "https://uselectionatlas.org/RESULTS/statesub.php?year=2016&fips=46113&f=1&off=0&elect=0"
+
+OglalaLakota <- xml2::read_html(GET(myurl, user_agent("myagent"))) %>%
+  rvest::html_table(fill = TRUE,header = NA) %>%
+  .[[3]]  %>% as.tibble %>% select(PoliticalParty = X4, PopularVote =  X5) %>% 
+  slice( 3:6) %>%   mutate(county_name = "Oglala Lakota",
+                           combined_fips =  "46102",
+                           state_abbr = "SD") %>% 
+  spread(PoliticalParty,PopularVote) %>% 
+  select(county_name, combined_fips, state_abbr, votes_dem_2016 =  Democratic,
+         votes_gop_2016 =  Republican, Libertarian, Constitution) %>% 
+  mutate_at(vars(votes_dem_2016:Constitution),
+            funs(as.numeric(gsub(",","",.)))) %>% 
+  mutate(total_votes_2016 = votes_gop_2016 + votes_dem_2016 +Libertarian+ Constitution,
+         Clinton = votes_dem_2016/total_votes_2016,
+         Trump = votes_gop_2016/total_votes_2016,
+         diff_2016 = votes_gop_2016- votes_dem_2016,
+         per_point_diff_2016 = Clinton- Trump ) %>% 
+  select(-c( Libertarian, Constitution))
+
+voteData <- rbind(voteData, OglalaLakota) %>%
+  mutate(Won = ifelse(Clinton > Trump,"Clinton","Trump"))
+
+countyVotes <- cb_2016_us_county_500k %>% 
+  st_transform(., 2229) %>% 
+  mutate(combined_fips = paste0(STATEFP, COUNTYFP),
+         nchartest = nchar(as.character(combined_fips))) %>% as_tibble() %>% 
+  inner_join(voteData, by = "combined_fips") %>% 
+  select(STATEFP, COUNTYFP,COUNTYNS,AFFGEOID,GEOID,NAME,
+         votes_dem_2016,votes_gop_2016,total_votes_2016,Clinton,
+         Trump,diff_2016,per_point_diff_2016,state_abbr, 
+         county_name, geometry, Won) %>% 
+  mutate_if(is.character, as.factor)
+
+st_crs(countyVotes)
+
+try(st_write(countyVotes, "countyVotes.shp"))
+
+# disolve map by state
+
+stateVotes <- countyVotes %>% 
+  group_by(state_abbr) %>% 
+  summarize(TotVotes_dem_2016 = sum(votes_dem_2016, na.rm = TRUE),
+            TotVotes_gop_2016 = sum(votes_gop_2016, na.rm = TRUE),
+            Tottotal_votes_2016 = sum(total_votes_2016, na.rm = TRUE),
+            TotClinton = TotVotes_dem_2016/Tottotal_votes_2016,
+            TotTrump = TotVotes_gop_2016/Tottotal_votes_2016) %>% 
+  ungroup() %>%
+  mutate(Won = ifelse(TotClinton > TotTrump,"Clinton","Trump"))
+
+st_crs(stateVotes)
+
+try(st_write(stateVotes, "stateVotes.shp")) 
+
+```
+
+```{r loadMaps}
+
+
+library(extrafont)
+font_import(pattern = "Roboto", prompt=FALSE)
+loadfonts(device = "win", quiet = TRUE)
+import_roboto_condensed()
+
+update_geom_font_defaults(family=font_rc_light)
+
+# state
+# 
+# state map
+
+stateMapbreaks <- fivenum(stateVotes$TotClinton, na.rm = TRUE) %>% round(.,2)
+
+stateVotesMap <- as(stateVotes, 'Spatial')
+
+proj4string(stateVotesMap) <- CRS("+init=epsg:2229")
+
+stateFrtMap <- broom::tidy(stateVotesMap, region = "state_abbr")
+  
+stateFrtMap <- dplyr::left_join(stateFrtMap,
+                                       stateVotesMap@data,
+                                       by = c("id" = "state_abbr"))
+
+# state cartogram
+
+stateVoteCartogram <- read_sf("./stateCartogram.shp", quiet = TRUE, stringsAsFactors = FALSE) 
+
+stateVoteCartogram <- as(stateVoteCartogram, 'Spatial')
+
+proj4string(stateVoteCartogram) <- CRS("+init=epsg:2229")
+
+stateFrtCartogram <- broom::tidy(stateVoteCartogram, region = "stt_b")
+  
+stateFrtCartogram <- dplyr::left_join(stateFrtCartogram,
+                                       stateVoteCartogram@data,
+                                       by = c("id" = "stt_b"))
+
+# county map
+#
+#  map
+countyMapbreaks <- fivenum(countyVotes$Clinton, na.rm = TRUE) %>% round(.,2)
+
+countyVotesMap <- as(countyVotes, 'Spatial')
+
+proj4string(countyVotesMap) <- CRS("+init=epsg:2229")
+
+countyFrtMap <- broom::tidy(countyVotesMap, region = "AFFGEOID")
+  
+countyFrtMap <- dplyr::left_join(countyFrtMap,
+                                       countyVotesMap@data,
+                                       by = c("id" = "AFFGEOID"))
+
+
+# county cartogram
+
+countyVoteCartogram <- read_sf("./Cartogram.shp", quiet = TRUE, stringsAsFactors = FALSE) 
+
+countyVoteCartogram <- as(countyVoteCartogram, 'Spatial')
+
+proj4string(countyVoteCartogram) <- CRS("+init=epsg:2229")
+
+countyFrtCartogram <- broom::tidy(countyVoteCartogram, region = "AFFGEOI")
+  
+countyFrtCartogram <- dplyr::left_join(countyFrtCartogram,
+                                       countyVoteCartogram@data,
+                                      by = c("id" = "AFFGEOI"))
+
+
+# to do
+# create ggplot theme options
+
+
+
+# create maps
+# map state discrete 
+
+mapStateDisc <- ggplot() +
+  geom_polygon(data = stateFrtMap,
+               aes(long, lat, group = group, fill = Won),
+               # fill="grey40",
+               colour = "grey90", 
+               #alpha = .7,
+               size = .015) +
+  #theme_ipsum_rc(plot_title_size = 15, subtitle_size = 10, caption_size = 5) +
+  theme(#aspect.ratio = 1,
+                 panel.grid.major = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_rect(#colour = "grey90",
+                   size = 1,
+                   fill = "transparent",colour = NA),
+                 strip.text.x = element_text(size = 5,
+                                             colour = "black",
+                                             angle = 00),
+                 legend.position = "bottom", # c(.55, .10),
+                 #plot.margin = unit(c(0,0,-.5,-.5), "cm"),
+                 legend.key.width = unit(1, "cm"),
+                 axis.title.x = element_blank(),
+                 axis.text.x = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.text.y = element_blank(),
+                 #legend.key.width = unit(3,"line"),
+                 plot.margin = unit(c(3,3,3,3),"mm")) +
+  labs(#x = "Year",
+    #y = "yr""
+    title = "test",
+    subtitle = paste("test"), 
+    caption  = "Source: test"
+  )
+
+# map state continous
+
+mapStateCont <- ggplot() +
+    geom_polygon(data = stateFrtMap,
+                 aes(long, lat, group = group, fill = TotClinton),
+                 # fill="grey40",
+                 colour = "grey90",
+                 #alpha = .7,
+                 size = .015) +
+  scale_fill_gradient2(name = "Percent",
+                       breaks = stateMapbreaks, labels =  stateMapbreaks)  +
+  #theme_ipsum_rc(plot_title_size = 15, subtitle_size = 10, caption_size = 5) +
+  theme(#aspect.ratio = 1,
+                 panel.grid.major = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_rect(#colour = "grey90",
+                   size = 1,
+                   fill = "transparent",colour = NA),
+                 strip.text.x = element_text(size = 5,
+                                             colour = "black",
+                                             angle = 00),
+                 legend.position = "bottom", # c(.55, .10),
+                 #plot.margin = unit(c(0,0,-.5,-.5), "cm"),
+                 legend.key.width = unit(1, "cm"),
+                 axis.title.x = element_blank(),
+                 axis.text.x = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.text.y = element_blank(),
+                 #legend.key.width = unit(3,"line"),
+                 plot.margin = unit(c(3,3,3,3),"mm")) +
+  labs(#x = "Year",
+    #y = "yr""
+    title = "test",
+    subtitle = paste("test"), 
+    caption  = "Source: test"
+  )
+
+# cartogram state discrete 
+
+crtStateDisc <- ggplot() +
+    geom_polygon(data = stateFrtCartogram,
+                 aes(long, lat, group = group, fill = Won),
+                 # fill="grey40",
+                 colour = "grey90",
+                 #alpha = .7,
+                 size = .015)  +
+  #theme_ipsum_rc(plot_title_size = 15, subtitle_size = 10, caption_size = 5) +
+  theme(#aspect.ratio = 1,
+                 panel.grid.major = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_rect(#colour = "grey90",
+                   size = 1,
+                   fill = "transparent",colour = NA),
+                 strip.text.x = element_text(size = 5,
+                                             colour = "black",
+                                             angle = 00),
+                 legend.position = "bottom", # c(.55, .10),
+                 #plot.margin = unit(c(0,0,-.5,-.5), "cm"),
+                 legend.key.width = unit(1, "cm"),
+                 axis.title.x = element_blank(),
+                 axis.text.x = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.text.y = element_blank(),
+                 #legend.key.width = unit(3,"line"),
+                 plot.margin = unit(c(3,3,3,3),"mm")) +
+  labs(#x = "Year",
+    #y = "yr""
+    title = "test",
+    subtitle = paste("test"), 
+    caption  = "Source: test"
+  )
+
+# cartogram state continous
+
+crtStateCont <- ggplot() +
+  geom_polygon(data = stateFrtCartogram,
+               aes(long, lat, group = group, fill = TtCln),
+               # fill="grey40",
+               colour = "grey90",
+               #alpha = .7,
+               size = .015) +
+  scale_fill_gradient2(name = "Percent",
+                       breaks = stateMapbreaks, labels =  stateMapbreaks) +
+  #theme_ipsum_rc(plot_title_size = 15, subtitle_size = 10, caption_size = 5) +
+  theme(#aspect.ratio = 1,
+                 panel.grid.major = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_rect(#colour = "grey90",
+                   size = 1,
+                   fill = "transparent",colour = NA),
+                 strip.text.x = element_text(size = 5,
+                                             colour = "black",
+                                             angle = 00),
+                 legend.position = "bottom", # c(.55, .10),
+                 #plot.margin = unit(c(0,0,-.5,-.5), "cm"),
+                 legend.key.width = unit(1, "cm"),
+                 axis.title.x = element_blank(),
+                 axis.text.x = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.text.y = element_blank(),
+                 #legend.key.width = unit(3,"line"),
+                 plot.margin = unit(c(3,3,3,3),"mm")) +
+  labs(#x = "Year",
+    #y = "yr""
+    title = "test",
+    subtitle = paste("test"), 
+    caption  = "Source: test"
+  )
+
+# map county discrete 
+mapCountyDisc <- ggplot() +
+  geom_polygon(data = countyFrtMap,
+               aes(long, lat, group = group, fill = Won),
+               # fill="grey40",
+               colour = "grey90",
+               #alpha = .7,
+               size = .015)+
+  #theme_ipsum_rc(plot_title_size = 15, subtitle_size = 10, caption_size = 5) +
+  theme(#aspect.ratio = 1,
+                 panel.grid.major = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_rect(#colour = "grey90",
+                   size = 1,
+                   fill = "transparent",colour = NA),
+                 strip.text.x = element_text(size = 5,
+                                             colour = "black",
+                                             angle = 00),
+                 legend.position = "bottom", # c(.55, .10),
+                 #plot.margin = unit(c(0,0,-.5,-.5), "cm"),
+                 legend.key.width = unit(1, "cm"),
+                 axis.title.x = element_blank(),
+                 axis.text.x = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.text.y = element_blank(),
+                 #legend.key.width = unit(3,"line"),
+                 plot.margin = unit(c(3,3,3,3),"mm")) +
+  labs(#x = "Year",
+    #y = "yr""
+    title = "test",
+    subtitle = paste("test"), 
+    caption  = "Source: test"
+  )
+
+# map county continous
+
+mapCountyCont <- ggplot() +
+  geom_polygon(data = countyFrtMap,
+               aes(long, lat, group = group, fill = Clinton),
+               # fill="grey40",
+               colour = "grey90",
+               #alpha = .7,
+               size = .015) +
+  # coord_equal(xlim = c(6668481, 6275488), 
+  #             ylim = c( 2122084,  16.5e+05))  +
+  scale_fill_gradient2(name = "Percent",
+                       breaks = countyMapbreaks, labels =  countyMapbreaks) +
+  #theme_ipsum_rc(plot_title_size = 15, subtitle_size = 10, caption_size = 5) +
+  theme(#aspect.ratio = 1,
+                 panel.grid.major = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_rect(#colour = "grey90",
+                   size = 1,
+                   fill = "transparent",colour = NA),
+                 strip.text.x = element_text(size = 5,
+                                             colour = "black",
+                                             angle = 00),
+                 legend.position = "bottom", # c(.55, .10),
+                 #plot.margin = unit(c(0,0,-.5,-.5), "cm"),
+                 legend.key.width = unit(1, "cm"),
+                 axis.title.x = element_blank(),
+                 axis.text.x = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.text.y = element_blank(),
+                 #legend.key.width = unit(3,"line"),
+                 plot.margin = unit(c(3,3,3,3),"mm")) +
+  labs(#x = "Year",
+    #y = "yr""
+    title = "test",
+    subtitle = paste("test"), 
+    caption  = "Source: test"
+  )
+
+
+# cartogram county discrete
+
+mapCountCont <- ggplot() +
+  geom_polygon(data = countyFrtCartogram,
+               aes(long, lat, group = group, fill = Won),
+               # fill="grey40",
+               colour = "grey90",
+               #alpha = .7,
+               size = .015)+
+  #theme_ipsum_rc(plot_title_size = 15, subtitle_size = 10, caption_size = 5) +
+  theme(#aspect.ratio = 1,
+                 panel.grid.major = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_rect(#colour = "grey90",
+                   size = 1,
+                   fill = "transparent",colour = NA),
+                 strip.text.x = element_text(size = 5,
+                                             colour = "black",
+                                             angle = 00),
+                 legend.position = "bottom", # c(.55, .10),
+                 #plot.margin = unit(c(0,0,-.5,-.5), "cm"),
+                 legend.key.width = unit(1, "cm"),
+                 axis.title.x = element_blank(),
+                 axis.text.x = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.text.y = element_blank(),
+                 #legend.key.width = unit(3,"line"),
+                 plot.margin = unit(c(3,3,3,3),"mm")) +
+  labs(#x = "Year",
+    #y = "yr""
+    title = "test",
+    subtitle = paste("test"), 
+    caption  = "Source: test"
+  )
+
+# cartogram county continous
+
+crtCountCont <- ggplot() +
+  geom_polygon(data = countyFrtCartogram,
+               aes(long, lat, group = group, fill = Clinton),
+               # fill="grey40",
+               colour = "grey90",
+               #alpha = .7,
+               size = .015) +
+  # coord_equal(xlim = c(6668481, 6275488), 
+  #             ylim = c( 2122084,  16.5e+05))  +
+  scale_fill_gradient2(name = "Percent",
+                       breaks = countyMapbreaks, labels =  countyMapbreaks)+
+  #theme_ipsum_rc(plot_title_size = 15, subtitle_size = 10, caption_size = 5) +
+  theme(#aspect.ratio = 1,
+                 panel.grid.major = element_blank(),
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_rect(#colour = "grey90",
+                   size = 1,
+                   fill = "transparent",colour = NA),
+                 strip.text.x = element_text(size = 5,
+                                             colour = "black",
+                                             angle = 00),
+                 legend.position = "bottom", # c(.55, .10),
+                 #plot.margin = unit(c(0,0,-.5,-.5), "cm"),
+                 legend.key.width = unit(1, "cm"),
+                 axis.title.x = element_blank(),
+                 axis.text.x = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.text.y = element_blank(),
+                 #legend.key.width = unit(3,"line"),
+                 plot.margin = unit(c(3,3,3,3),"mm")) +
+  labs(#x = "Year",
+    #y = "yr""
+    title = "test",
+    subtitle = paste("test"), 
+    caption  = "Source: test"
+  )
+
+
+```
+
+
+```{r plotPresidentsHeights, include =  FALSE, eval = FALSE, message=FALSE, cache = FALSE}
+
+
+library(grid)
+library(gridExtra)
+
+# grid.newpage()
+# pushViewport(viewport(layout = grid.layout(2, 1))) # row and col
+# 
+# print(mapStateDisc, vp = vplayout(1, 1))
+# print(mapStateCont, vp = vplayout(2, 1))
+
+
+pushViewport(viewport(layout = grid.layout(nrow = 2, ncol = 1, heights = unit(c(4, 4), "null")))) 
+print(mapStateDisc, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(mapStateCont, vp = viewport(layout.pos.row = 2, layout.pos.col = 1))
+
+
+
+```
+
+
+```{r plotcombo, include =  TRUE, eval = TRUE, message = FALSE, cache = TRUE, fig.width=6, fig.height=9}
+
+library(extrafont)
+font_import(pattern = "Roboto", prompt=FALSE)
+loadfonts(device = "win", quiet = TRUE)
+import_roboto_condensed()
+
+update_geom_font_defaults(family=font_rc_light)
+
+library(cowplot)
+
+plot_grid(mapStateDisc,
+          mapStateCont,
+          crtStateDisc,
+          crtStateCont,
+          labels = c("mapStateDisc","mapStateCont",
+                     "crtStateDisc","crtStateCont"),
+          label_size = 10,
+          ncol = 2,
+          rel_widths = .5,
+          rel_heights = 1)
+
+
+```
+
+
+
+```{r plotcombo2, include =  TRUE, eval = TRUE, message = FALSE, cache = TRUE, fig.width=6, fig.height=9}
+
+library(extrafont)
+font_import(pattern = "Roboto", prompt=FALSE)
+loadfonts(device = "win", quiet = TRUE)
+import_roboto_condensed()
+
+update_geom_font_defaults(family=font_rc_light)
+
+library(cowplot)
+
+plot_grid(mapCountyDisc,
+          mapCountyCont,
+          mapCountCont,
+          crtCountCont,
+          labels = c("mapCountyDisc","mapCountyCont",
+                     "mapCountCont","crtCountCont"),
+          label_size = 10,
+          ncol = 2,
+          rel_widths = .5,
+          rel_heights = 1)
+
+
+```
+
+```{r sample, echo=FALSE, results='asis', include= TRUE}
+
+# from here
+# https://stackoverflow.com/questions/13675380/inset-footnote-into-header-with-xtable-and-tabular-environment
+
+require(xtable)
+x <- matrix(rnorm(60), ncol = 10)
+x.big <- xtable(x,label='tabbig', caption='Example of longtable')
+names(x.big) <- LETTERS[1:10]
+names(x.big)[9] <- paste('I','footnote')    # I put the tag on I letter 
+print(x.big,tabular.environment='longtable',floating=FALSE,
+      sanitize.text.function=function(str)gsub("footnote","\\footnote{my tricky footnote !!}",str,fixed=TRUE))
+      
+```
+
+I'm writing something here to test \footnote{footnotes working fine}
+several features.
+
+
+\begin{thebibliography}{9}
+
+\bibitem{lamport94}
+  Leslie Lamport,
+  \textit{\LaTeX: a document preparation system},
+  Addison Wesley, Massachusetts,
+  2nd edition,
+  1994.
+
+\bibitem{latexcompanion} 
+Michel Goossens, Frank Mittelbach, and Alexander Samarin. 
+\textit{The \LaTeX\ Companion}. 
+Addison-Wesley, Reading, Massachusetts, 1993.
+ 
+\bibitem{einstein} 
+Albert Einstein. 
+\textit{Zur Elektrodynamik bewegter K{\"o}rper}. (German) 
+[\textit{On the electrodynamics of moving bodies}]. 
+Annalen der Physik, 322(10):891–921, 1905.
+ 
+\bibitem{knuthwebsite} 
+Knuth: Computers and Typesetting,
+\url{http://www.rivcoems.org/Portals/0/Documents/DOCUMENTS/CONTRACTS/AMR/Current%20AMR%20Contract%20%202015.pdf}
+
+
+\end{thebibliography}
